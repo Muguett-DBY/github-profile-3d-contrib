@@ -1058,7 +1058,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.fetchData = exports.fetchNext = exports.fetchFirst = exports.URL = void 0;
+exports.fetchData = exports.fetchOrgRepos = exports.fetchNext = exports.fetchFirst = exports.URL = void 0;
 const axios_1 = __importDefault(__nccwpck_require__(87269));
 exports.URL = process.env.GITHUB_ENDPOINT || 'https://api.github.com/graphql';
 const maxReposOneQuery = 100;
@@ -1153,8 +1153,38 @@ const fetchNext = async (token, userName, cursor) => {
     return response.data;
 };
 exports.fetchNext = fetchNext;
+const fetchOrgRepos = async (token, orgLogin, cursor = null) => {
+    const headers = {
+        Authorization: `bearer ${token}`,
+    };
+    const after = cursor ? `, after: "${cursor}"` : '';
+    const request = {
+        query: `
+            query($login: String!) {
+                organization(login: $login) {
+                    repositories(first: ${maxReposOneQuery}${after}, isFork: false, privacy: PUBLIC) {
+                        edges {
+                            cursor
+                        }
+                        nodes {
+                            forkCount
+                            stargazerCount
+                        }
+                    }
+                }
+            }
+        `.replace(/\s+/g, ' '),
+        variables: { login: orgLogin },
+    };
+    const response = await axios_1.default.post(exports.URL, request, {
+        headers: headers,
+    });
+    return response.data;
+};
+exports.fetchOrgRepos = fetchOrgRepos;
 /** Fetch data from GitHub GraphQL */
-const fetchData = async (token, userName, maxRepos, year = null) => {
+const fetchData = async (token, userName, maxRepos, year = null, includeOrgs = []) => {
+    var _a, _b, _c;
     const res1 = await (0, exports.fetchFirst)(token, userName, year);
     const result = res1.data;
     if (result && result.user.repositories.nodes.length === maxReposOneQuery) {
@@ -1172,6 +1202,32 @@ const fetchData = async (token, userName, maxRepos, year = null) => {
             }
             else {
                 break;
+            }
+        }
+    }
+    if (result && includeOrgs.length > 0) {
+        for (const org of includeOrgs) {
+            let cursor = null;
+            let done = false;
+            while (!done) {
+                const orgRes = await (0, exports.fetchOrgRepos)(token, org, cursor);
+                if ((_a = orgRes.errors) === null || _a === void 0 ? void 0 : _a.length) {
+                    return { errors: orgRes.errors };
+                }
+                const orgRepos = (_c = (_b = orgRes.data) === null || _b === void 0 ? void 0 : _b.organization) === null || _c === void 0 ? void 0 : _c.repositories;
+                if (!orgRepos || orgRepos.nodes.length === 0) {
+                    done = true;
+                }
+                else {
+                    result.user.repositories.nodes.push(...orgRepos.nodes);
+                    if (orgRepos.nodes.length !== maxReposOneQuery) {
+                        done = true;
+                    }
+                    else {
+                        cursor =
+                            orgRepos.edges[orgRepos.edges.length - 1].cursor;
+                    }
+                }
             }
         }
     }
@@ -1246,7 +1302,11 @@ const main = async () => {
             process.exitCode = 1;
             return;
         }
-        const response = await client.fetchData(token, userName, maxRepos, year);
+        const includeOrgs = (process.env.INCLUDE_ORGS || '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+        const response = await client.fetchData(token, userName, maxRepos, year, includeOrgs);
         const userInfo = aggregate.aggregateUserInfo(response);
         if (process.env.SETTING_JSON) {
             const settingFile = r.readSettingJson(process.env.SETTING_JSON);
@@ -14153,6 +14213,18 @@ var hasOwn = __nccwpck_require__(54076);
 var populate = __nccwpck_require__(11835);
 
 /**
+ * Escape CR, LF, and `"` in a multipart `name`/`filename` parameter, so a field
+ * name or filename can not break out of its header line to inject headers or
+ * smuggle additional parts. Matches the WHATWG HTML multipart/form-data encoding.
+ *
+ * @param {string} str - the parameter value to escape
+ * @returns {string} the escaped value
+ */
+function escapeHeaderParam(str) {
+  return String(str).replace(/\r/g, '%0D').replace(/\n/g, '%0A').replace(/"/g, '%22');
+}
+
+/**
  * Create readable "multipart/form-data" streams.
  * Can be used to submit forms
  * and file uploads to other web applications.
@@ -14317,7 +14389,7 @@ FormData.prototype._multiPartHeader = function (field, value, options) {
   var contents = '';
   var headers = {
     // add custom disposition as third element or keep it two elements if not
-    'Content-Disposition': ['form-data', 'name="' + field + '"'].concat(contentDisposition || []),
+    'Content-Disposition': ['form-data', 'name="' + escapeHeaderParam(field) + '"'].concat(contentDisposition || []),
     // if no content type. allow it to be empty array
     'Content-Type': [].concat(contentType || [])
   };
@@ -14371,7 +14443,7 @@ FormData.prototype._getContentDisposition = function (value, options) { // eslin
   }
 
   if (filename) {
-    return 'filename="' + filename + '"';
+    return 'filename="' + escapeHeaderParam(filename) + '"';
   }
 };
 

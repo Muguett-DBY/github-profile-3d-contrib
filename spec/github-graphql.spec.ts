@@ -93,3 +93,80 @@ describe('github-graphql', () => {
         }
     });
 });
+
+describe('github-graphql organization repositories', () => {
+    const errors: NonNullable<client.OrgResponseType['errors']> = [
+        { message: 'Organization query failed' },
+    ];
+    const orgPage = (count: number): client.OrgResponseType => {
+        const repositories: client.Repositories = { edges: [], nodes: [] };
+        createRepositories(0, count, repositories);
+        return { data: { organization: { repositories } } };
+    };
+    const userPage = (): client.ResponseType =>
+        JSON.parse(JSON.stringify(dummyData)) as client.ResponseType;
+
+    it.each<[string, client.OrgResponseType]>([
+        ['a response without data', { errors }],
+        ['an unknown organization', { data: { organization: null }, errors }],
+        ['partial data with errors', { ...orgPage(1), errors }],
+    ])('returns errors for %s', async (_name, response) => {
+        mock.onPost(client.URL).replyOnce(200, userPage())
+            .onPost(client.URL).replyOnce(200, response);
+
+        const result = await client.fetchData('dummy', 'username', 100, null, ['org']);
+
+        expect(result).toEqual({ errors });
+        expect(mock.history.post).toHaveLength(2);
+    });
+
+    it('returns errors from a later organization page', async () => {
+        mock.onPost(client.URL).replyOnce(200, userPage())
+            .onPost(client.URL).replyOnce(200, orgPage(100))
+            .onPost(client.URL).replyOnce(200, { errors });
+
+        const result = await client.fetchData('dummy', 'username', 100, null, ['org']);
+
+        expect(result).toEqual({ errors });
+        expect(mock.history.post).toHaveLength(3);
+        expect(JSON.parse(mock.history.post[2].data).query).toContain('after: "curosr99"');
+    });
+
+    it('does not return partial totals when a later organization fails', async () => {
+        mock.onPost(client.URL).replyOnce(200, userPage())
+            .onPost(client.URL).replyOnce(200, orgPage(2))
+            .onPost(client.URL).replyOnce(200, { errors });
+
+        const result = await client.fetchData('dummy', 'username', 100, null, ['first', 'second']);
+
+        expect(result).toEqual({ errors });
+        expect(mock.history.post).toHaveLength(3);
+    });
+
+    it('merges every successful organization page', async () => {
+        const expected = userPage();
+        const first = orgPage(100);
+        const second = orgPage(2);
+        expected.data!.user.repositories.nodes.push(
+            ...first.data!.organization!.repositories.nodes,
+            ...second.data!.organization!.repositories.nodes,
+        );
+        mock.onPost(client.URL).replyOnce(200, userPage())
+            .onPost(client.URL).replyOnce(200, first)
+            .onPost(client.URL).replyOnce(200, second);
+
+        const result = await client.fetchData('dummy', 'username', 100, null, ['org']);
+
+        expect(result).toEqual(expected);
+        expect(mock.history.post).toHaveLength(3);
+    });
+
+    it('keeps the original response when no organizations are requested', async () => {
+        mock.onPost(client.URL).replyOnce(200, userPage());
+
+        const result = await client.fetchData('dummy', 'username', 100);
+
+        expect(result).toEqual(dummyData);
+        expect(mock.history.post).toHaveLength(1);
+    });
+});

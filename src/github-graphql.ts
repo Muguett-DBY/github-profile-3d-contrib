@@ -265,6 +265,9 @@ export const fetchData = async (
                     org,
                     cursor,
                 );
+                if (orgRes.errors?.length) {
+                    return { errors: orgRes.errors };
+                }
                 const orgRepos = orgRes.data?.organization?.repositories;
                 if (!orgRepos || orgRepos.nodes.length === 0) {
                     done = true;
